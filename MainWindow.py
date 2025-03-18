@@ -1,6 +1,5 @@
-from PyQt5.QtWidgets import (QApplication, QLabel,
-QWidget, QFileDialog, QProgressBar, QTableWidget, QTableWidgetItem,
-QHBoxLayout, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem,QDialog)
+from PyQt5.QtWidgets import (QApplication, QLabel, QWidget, QFileDialog, QProgressBar, QTableWidget, QTableWidgetItem,
+                             QHBoxLayout, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem, QDialog)
 import pandas as pd
 from PyQt5.QtCore import pyqtSignal
 from Convertation import parse_bin_file
@@ -8,7 +7,6 @@ from Sort_by_diag_type import sort_by_diag_type_message
 from Global import sorted_by_diag_type_file
 import sys
 import os
-import shutil
 
 
 class fileConverterApp(QWidget):
@@ -16,6 +14,7 @@ class fileConverterApp(QWidget):
         super().__init__()
         self.initUI()
         self.xlsx_file = None
+        self.bin_file = None
 
     def initUI(self):
         main_layout = QVBoxLayout()
@@ -26,9 +25,9 @@ class fileConverterApp(QWidget):
         self.bin_select_file = QPushButton("Вставьте BIN file")
         self.bin_select_file.clicked.connect(self.select_bin_file)
         left_layout.addWidget(self.bin_select_file)
-    
 
         self.btn_process = QPushButton("Обработать")
+        self.btn_process.setEnabled(False)  # Кнопка "Обработать" по умолчанию неактивна
         self.btn_process.clicked.connect(self.process_bin_file)
         left_layout.addWidget(self.btn_process)
 
@@ -37,13 +36,13 @@ class fileConverterApp(QWidget):
         left_layout.addWidget(self.progress_bar)
 
         self.btn_download = QPushButton("Скачать xlsx file")
-        self.btn_download.clicked.connect(self.downolad_xlsx)
-        self.btn_download.setEnabled(False)
+        self.btn_download.clicked.connect(self.download_xlsx)
+        self.btn_download.setEnabled(False)  # Кнопка "Скачать" неактивна по умолчанию
         left_layout.addWidget(self.btn_download)
 
         self.btn_download_sorted = QPushButton("Скачать отсортированный файл")
         self.btn_download_sorted.clicked.connect(self.download_sorted_xlsx)
-        self.btn_download_sorted.setEnabled(False)
+        self.btn_download_sorted.setEnabled(False)  # Кнопка для отсортированного файла неактивна
         left_layout.addWidget(self.btn_download_sorted)
 
         self.sort_label = QLabel("Сортировка")
@@ -64,7 +63,7 @@ class fileConverterApp(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(7)
         self.table.setHorizontalHeaderLabels(["Порядковый номер", "Время", "Номер задачи", "Тип диагностического сообщения",
-        "Длина бинарных данных", "Бинарные данные", "Текстовое сообщение разработчику"])
+                                              "Длина бинарных данных", "Бинарные данные", "Текстовое сообщение разработчику"])
         self.table.setRowCount(200)
 
         self.table.horizontalHeader().setStretchLastSection(True)
@@ -76,41 +75,45 @@ class fileConverterApp(QWidget):
 
         self.setWindowTitle("Converter")
         self.setLayout(main_layout)
-        self.setGeometry(100,100,800,600)
-
+        self.setGeometry(100, 100, 800, 600)
 
     def process_bin_file(self):
-        if not hasattr(self, "bin_bile"):
+        if not self.bin_file:
             self.file_label.setText("Ошибка: выберите BIN-файл перед обработкой")
             return
 
         self.progress_bar.setValue(25)
 
-        self.procces_workbook = parse_bin_file(self.bin_bile)  # Получаем Workbook
+        self.procces_workbook = parse_bin_file(self.bin_file)  # Получаем Workbook
         self.progress_bar.setValue(75)
 
         # Временный файл, который будем использовать при сортировке
         self.xlsx_file = os.path.join(os.getcwd(), "converted_file.xlsx")
 
+        # Удаление BIN файла после конвертации
+        try:
+            self.bin_file = None
+            self.file_label.setText(f"Файл {self.bin_file} удален после конвертации")
+            self.btn_process.setEnabled(False)
+        except Exception as e:
+            self.file_label.setText(f"Ошибка при удалении BIN файла: {e}")
 
         self.btn_download.setEnabled(True)
         self.progress_bar.setValue(100)
 
         self.load_xlsx_preview()
 
-
     def select_bin_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Выберите BIN-файл", "", "BIN files (*.bin)")
         if file_path:
             self.file_label.setText(f"Выбран файл: {file_path}")
-            self.bin_bile = file_path
-    
+            self.bin_file = file_path
+            self.btn_process.setEnabled(True)  # Включаем кнопку "Обработать" после выбора BIN файла
+
     def load_xlsx_preview(self):
         if not hasattr(self, "procces_workbook"):
             self.file_label.setText("Ошибка: файл не обработан")
             return
-
-        import pandas as pd
 
         data = []
 
@@ -119,7 +122,7 @@ class fileConverterApp(QWidget):
                 data.append(row)
 
         df = pd.DataFrame(data, columns=["Порядковый номер", "Время", "Номер задачи", "Тип диагностического сообщения",
-                                        "Длина бинарных данных", "Бинарные данные", "Текстовое сообщение разработчику"])
+                                         "Длина бинарных данных", "Бинарные данные", "Текстовое сообщение разработчику"])
 
         self.update_table(df)
 
@@ -131,8 +134,7 @@ class fileConverterApp(QWidget):
             for col in range(len(df.columns)):
                 self.table.setItem(row, col, QTableWidgetItem(str(df.iloc[row, col])))
 
-
-    def downolad_xlsx(self):
+    def download_xlsx(self):
         if not self.xlsx_file:
             return
 
@@ -140,20 +142,17 @@ class fileConverterApp(QWidget):
         if save_path:
             self.procces_workbook.save(self.xlsx_file)  # Сохраняем Workbook
 
-
-    
     def apply_message_type_sorting(self, selected_types):
         self.sorted_workbook = sort_by_diag_type_message(self.xlsx_file, selected_types)
-        
+
         if self.sorted_workbook:
-            self.btn_download_sorted.setEnabled(True)  # Включаем кнопку
+            self.btn_download_sorted.setEnabled(True)  # Включаем кнопку для скачивания отсортированного файла
 
-
-    
     def open_sort_message_window(self):
-        if not hasattr(self, "bin_file"):
+        if not self.xlsx_file:
             self.file_label.setText("Ошибка: выберите BIN-файл перед обработкой")
-        
+            return
+
         df = pd.read_excel(self.xlsx_file)
         unique_types = df["Тип диагностического сообщения"].dropna().unique().tolist()
 
@@ -161,7 +160,6 @@ class fileConverterApp(QWidget):
         self.sort_window.sorting_aplied.connect(self.apply_message_type_sorting)
         self.sort_window.show()
 
-    
     def download_sorted_xlsx(self):
         if not hasattr(self, "sorted_workbook") or self.sorted_workbook is None:
             return
@@ -169,7 +167,6 @@ class fileConverterApp(QWidget):
         save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить отсортированный файл", "Sort_diag_type.xlsx", "XLSX Files (*.xlsx)")
         if save_path:
             self.sorted_workbook.save(save_path)  # Сохраняем только при скачивании
-
 
 
 class SortByDiagMessageType(QDialog):
@@ -205,6 +202,7 @@ class SortByDiagMessageType(QDialog):
         main_layout.addLayout(lists_layout)
 
         self.btn_sort = QPushButton("Выполнить сортировку")
+        self.btn_sort.setEnabled(False)  # Изначально кнопка неактивна
         self.btn_sort.clicked.connect(self.apply_sorting)
         main_layout.addWidget(self.btn_sort)
 
@@ -218,7 +216,17 @@ class SortByDiagMessageType(QDialog):
                 self.list_all_types.addItem(QListWidgetItem(str(msg_type)))
                 self.list_select_types.addItem(QListWidgetItem(str(msg_type)))
 
-    
+        # Подключаем сигнал изменения выделенных элементов
+        self.list_select_types.itemSelectionChanged.connect(self.check_selection)
+
+    def check_selection(self):
+        # Проверяем, есть ли хотя бы один выбранный элемент в списке
+        selected_items = self.list_select_types.selectedItems()
+        if selected_items:
+            self.btn_sort.setEnabled(True)  # Активируем кнопку
+        else:
+            self.btn_sort.setEnabled(False)  # Деактивируем кнопку, если ничего не выбрано
+
     def apply_sorting(self):
         selected_types = [int(item.text()) for item in self.list_select_types.selectedItems()]
         if selected_types:
@@ -226,8 +234,7 @@ class SortByDiagMessageType(QDialog):
         self.close()
 
 
-
 app = QApplication(sys.argv)
-window = fileConverterApp()
-window.show()
+ex = fileConverterApp()
+ex.show()
 sys.exit(app.exec_())
