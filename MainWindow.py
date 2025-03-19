@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import (QApplication, QLabel, QWidget, QFileDialog, QProgressBar, QTableWidget, QTableWidgetItem,
-                             QHBoxLayout, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem, QDialog, QGroupBox)
+                             QHBoxLayout, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem, QDialog, QGroupBox, QMessageBox)
 import pandas as pd
 from PyQt5.QtCore import pyqtSignal
 from Convertation import parse_bin_file
@@ -157,7 +157,8 @@ class fileConverterApp(QWidget):
 
     def open_sort_message_window(self):
         if not self.xlsx_file:
-            self.file_label.setText("Ошибка: выберите BIN-файл перед обработкой")
+            self.message_error = QMessageBox.warning(self, "Ошибка", "Не найден xlsx файл")
+            return
 
         df = pd.read_excel(self.xlsx_file, sheet_name=None)  
         all_unique_types = []
@@ -183,7 +184,7 @@ class fileConverterApp(QWidget):
 
     def open_sort_task_window(self):
         if not self.xlsx_file:
-            self.file_label.setText("Ошибка: выберите BIN-файл перед обработкой")
+            self.message_error = QMessageBox.warning(self, "Ошибка", "Не найден xlsx файл")
             return
 
         available_tasks = gain_task_number(self.xlsx_file)
