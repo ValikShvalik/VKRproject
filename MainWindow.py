@@ -5,8 +5,8 @@ from PyQt5.QtCore import pyqtSignal
 from Convertation import parse_bin_file
 from Sort_by_diag_type import sort_by_diag_type_message
 from Global import sorted_by_diag_type_file
-import sys
-import os
+import sys, os
+from Core_process import Core_process, LoadXlsxThread, SaveFileThread
 from Sort_by_number_task import gain_task_number, filter_rows_by_task, create_sorted_workbook
 
 class fileConverterApp(QWidget):
@@ -15,6 +15,9 @@ class fileConverterApp(QWidget):
         self.initUI()
         self.xlsx_file = None
         self.bin_file = None
+        self.core_process = None
+        self.load_thread = None  
+        self.save_thread = None
 
     def initUI(self):
         main_layout = QVBoxLayout()
@@ -35,7 +38,9 @@ class fileConverterApp(QWidget):
         left_layout.addWidget(self.btn_process)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
+        self.progress_bar.setRange(0, 100)  
+        self.progress_bar.setValue(0) 
+        self.progress_bar.setTextVisible(True)  
         left_layout.addWidget(self.progress_bar)
 
         self.btn_download = QPushButton("Скачать xlsx file")
@@ -92,22 +97,22 @@ class fileConverterApp(QWidget):
 
         self.progress_bar.setValue(25)
 
-        self.procces_workbook = parse_bin_file(self.bin_file)  # Получаем Workbook
-        self.progress_bar.setValue(75)
+        # Создаем и запускаем поток
+        self.core_process = Core_process(self.bin_file)
+        self.core_process.progress_updated.connect(self.update_progress)
+        self.core_process.process_completed.connect(self.on_process_completed)
+        self.core_process.start()
+        self.btn_process.setEnabled(False)
 
-        self.xlsx_file = os.path.join(os.getcwd(), "converted_file.xlsx")
+    def on_process_completed(self, wb):
+        if wb:
+            self.xlsx_file = os.path.join(os.getcwd(), "converted_file.xlsx")
+            self.btn_download.setEnabled(True)
+            self.process_workbook = wb
+            self.load_xlsx_preview(wb)
+        else:
+            self.file_label.setText("Ошибка при конвертации BIN файла")
 
-        try:
-            self.bin_file = None
-            self.file_label.setText(f"Файл {self.bin_file} удален после конвертации")
-            self.btn_process.setEnabled(False)
-        except Exception as e:
-            self.file_label.setText(f"Ошибка при удалении BIN файла: {e}")
-
-        self.btn_download.setEnabled(True)
-        self.progress_bar.setValue(100)
-
-        self.load_xlsx_preview()
 
     def select_bin_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Выберите BIN-файл", "", "BIN files (*.bin)")
@@ -116,23 +121,18 @@ class fileConverterApp(QWidget):
             self.bin_file = file_path
             self.btn_process.setEnabled(True)  # Включаем кнопку "Обработать" после выбора BIN файла
 
-    def load_xlsx_preview(self):
-        if not hasattr(self, "procces_workbook"):
-            self.file_label.setText("Ошибка: файл не обработан")
-            return
-
-        data = []
-
-        for sheet in self.procces_workbook.worksheets:
-            for row in sheet.iter_rows(min_row=2, values_only=True):
-                data.append(row)
-
-        df = pd.DataFrame(data, columns=["Порядковый номер", "Время", "Номер задачи", "Тип диагностического сообщения",
-                                         "Длина бинарных данных", "Бинарные данные", "Текстовое сообщение разработчику"])
-
-        self.update_table(df)
+    def load_xlsx_preview(self, wb):
+        # Создаем и запускаем новый поток для обработки данных
+        self.load_thread = LoadXlsxThread(wb)
+        self.load_thread.data_loaded.connect(self.update_table)  # Подключаем сигнал к методу обновления таблицы
+        self.load_thread.progress_update.connect(self.uptade_table_progress)  # Подключаем сигнал для обновления прогресса
+        self.load_thread.start()
 
     def update_table(self, df):
+        if df.empty:
+            self.file_label.setText("Ошибка при загрузке данных")
+            return
+        
         self.table.setRowCount(len(df))
         self.table.setColumnCount(len(df.columns))
 
@@ -140,15 +140,33 @@ class fileConverterApp(QWidget):
             for col in range(len(df.columns)):
                 self.table.setItem(row, col, QTableWidgetItem(str(df.iloc[row, col])))
 
+    
+    def update_progress(self, progress):
+        self.progress_bar.setValue(progress)
+
+    def uptade_table_progress(self, progress):
+        self.progress_bar.setValue(progress)
+
+    def update_progress_bar(self, value):
+        self.progress_bar.setValue(value)
+
+
+
     def download_xlsx(self):
         if not self.xlsx_file:
             return
 
         save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", "converted_file.xlsx", "XLSX Files (*.xlsx)")
         if save_path:
-            self.procces_workbook.save(self.xlsx_file)  # Сохраняем Workbook
-            self.btn_download.setEnabled(False) 
+            self.save_thread = SaveFileThread(self.process_workbook, save_path)      
+            self.save_thread.progress.connect(self.update_progress_bar)
+            self.save_thread.start()
 
+            self.btn_download.setEnabled(False)  
+            self.progress_bar.setValue(0)  
+            self.progress_bar.setVisible(True) 
+
+        
     def apply_message_type_sorting(self, selected_types):
         self.sorted_workbook = sort_by_diag_type_message(self.xlsx_file, selected_types)
 
