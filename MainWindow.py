@@ -2,12 +2,10 @@ from PyQt5.QtWidgets import (QApplication, QLabel, QWidget, QFileDialog, QProgre
                              QHBoxLayout, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem, QDialog, QGroupBox, QMessageBox)
 import pandas as pd
 from PyQt5.QtCore import pyqtSignal
-from Convertation import parse_bin_file
 from Sort_by_diag_type import sort_by_diag_type_message
-from Global import sorted_by_diag_type_file
-import sys
-import os
-from Sort_by_number_task import gain_task_number, filter_rows_by_task, create_sorted_workbook
+import sys, os, openpyxl
+from Core_process import SaveFileThread, Core_process, LoadXlsxThread, SortTaskThread, LoadReadyXlsx
+from Sort_by_number_task import gain_task_number
 
 class fileConverterApp(QWidget):
     def __init__(self):
@@ -15,6 +13,9 @@ class fileConverterApp(QWidget):
         self.initUI()
         self.xlsx_file = None
         self.bin_file = None
+        self.core_process = None
+        self.load_thread = None  
+        self.save_thread = None
 
     def initUI(self):
         main_layout = QVBoxLayout()
@@ -35,7 +36,9 @@ class fileConverterApp(QWidget):
         left_layout.addWidget(self.btn_process)
 
         self.progress_bar = QProgressBar()
-        self.progress_bar.setValue(0)
+        self.progress_bar.setRange(0, 100)  
+        self.progress_bar.setValue(0) 
+        self.progress_bar.setTextVisible(True)  
         left_layout.addWidget(self.progress_bar)
 
         self.btn_download = QPushButton("Скачать xlsx file")
@@ -92,47 +95,55 @@ class fileConverterApp(QWidget):
 
         self.progress_bar.setValue(25)
 
-        self.procces_workbook = parse_bin_file(self.bin_file)  # Получаем Workbook
-        self.progress_bar.setValue(75)
+        # Создаем и запускаем поток
+        self.core_process = Core_process(self.bin_file)
+        self.core_process.progress_updated.connect(self.update_progress)
+        self.core_process.process_completed.connect(self.on_process_completed)
+        self.core_process.start()
+        self.btn_process.setEnabled(False)
 
-        self.xlsx_file = os.path.join(os.getcwd(), "converted_file.xlsx")
+    def on_process_completed(self, wb):
+        if wb:
+            self.xlsx_file = os.path.join(os.getcwd(), "converted_file.xlsx")
+            self.btn_download.setEnabled(True)
+            self.process_workbook = wb
+            self.load_xlsx_preview(wb)
+        else:
+            self.file_label.setText("Ошибка при конвертации BIN файла")
 
-        try:
-            self.bin_file = None
-            self.file_label.setText(f"Файл {self.bin_file} удален после конвертации")
-            self.btn_process.setEnabled(False)
-        except Exception as e:
-            self.file_label.setText(f"Ошибка при удалении BIN файла: {e}")
-
-        self.btn_download.setEnabled(True)
-        self.progress_bar.setValue(100)
-
-        self.load_xlsx_preview()
 
     def select_bin_file(self):
-        file_path, _ = QFileDialog.getOpenFileName(self, "Выберите BIN-файл", "", "BIN files (*.bin)")
-        if file_path:
+        options = QFileDialog.Options()
+        file_path, _ = QFileDialog.getOpenFileName(self, "Выберите файл", "", "Все файлы (*);;BIN файлы (*.bin);;XLSX файлы (*.xlsx)", options=options)
+        if file_path.endswith(".bin"):
             self.file_label.setText(f"Выбран файл: {file_path}")
             self.bin_file = file_path
             self.btn_process.setEnabled(True)  # Включаем кнопку "Обработать" после выбора BIN файла
+        elif file_path.endswith(".xlsx"):
+            self.file_label.setText(f"Выбран файл: {file_path}")
+            self.ready_data = LoadReadyXlsx(file_path)
+            self.ready_data.progress_update.connect(self.update_progress)
+            self.ready_data.file_loaded.connect(self.load_xlsx_preview)
+            self.ready_data.Ppath.connect(self.handle_file_loaded)
+            self.ready_data.start()
+           
+            self.btn_process.setEnabled(False)
 
-    def load_xlsx_preview(self):
-        if not hasattr(self, "procces_workbook"):
-            self.file_label.setText("Ошибка: файл не обработан")
-            return
+    def handle_file_loaded(self, path):
+        self.xlsx_file = path
+        self.file_label.setText(f"Выбран файл: {self.xlsx_file}") 
 
-        data = []
-
-        for sheet in self.procces_workbook.worksheets:
-            for row in sheet.iter_rows(min_row=2, values_only=True):
-                data.append(row)
-
-        df = pd.DataFrame(data, columns=["Порядковый номер", "Время", "Номер задачи", "Тип диагностического сообщения",
-                                         "Длина бинарных данных", "Бинарные данные", "Текстовое сообщение разработчику"])
-
-        self.update_table(df)
+    def load_xlsx_preview(self, wb):
+        self.load_thread = LoadXlsxThread(wb)
+        self.load_thread.data_loaded.connect(self.update_table)  # Подключаем сигнал к методу обновления таблицы
+        self.load_thread.progress_update.connect(self.update_progress)  # Подключаем сигнал для обновления прогресса
+        self.load_thread.start()
 
     def update_table(self, df):
+        if df.empty:
+            self.file_label.setText("Ошибка при загрузке данных")
+            return
+        
         self.table.setRowCount(len(df))
         self.table.setColumnCount(len(df.columns))
 
@@ -140,15 +151,33 @@ class fileConverterApp(QWidget):
             for col in range(len(df.columns)):
                 self.table.setItem(row, col, QTableWidgetItem(str(df.iloc[row, col])))
 
+    
+    def update_progress(self, progress):
+        self.progress_bar.setValue(progress)
+
+    def uptade_table_progress(self, progress):
+        self.progress_bar.setValue(progress)
+
+    def update_progress_bar(self, value):
+        self.progress_bar.setValue(value)
+
+
+
     def download_xlsx(self):
         if not self.xlsx_file:
             return
 
         save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", "converted_file.xlsx", "XLSX Files (*.xlsx)")
         if save_path:
-            self.procces_workbook.save(self.xlsx_file)  # Сохраняем Workbook
-            self.btn_download.setEnabled(False) 
+            self.save_thread = SaveFileThread(self.process_workbook, save_path)      
+            self.save_thread.progress.connect(self.update_progress)
+            self.save_thread.start()
 
+            self.btn_download.setEnabled(False)  
+            self.progress_bar.setValue(0)  
+            self.progress_bar.setVisible(True) 
+
+        
     def apply_message_type_sorting(self, selected_types):
         self.sorted_workbook = sort_by_diag_type_message(self.xlsx_file, selected_types)
 
@@ -181,11 +210,14 @@ class fileConverterApp(QWidget):
         self.sort_window.sorting_aplied.connect(self.apply_message_type_sorting)
         self.sort_window.show()
 
-
     def open_sort_task_window(self):
         if not self.xlsx_file:
             self.message_error = QMessageBox.warning(self, "Ошибка", "Не найден xlsx файл")
             return
+        
+
+        if hasattr(self, 'sort_task_window') and self.sort_task_window.isVisible():
+            return  # Если окно сортировки уже открыто, не открывать новое
 
         available_tasks = gain_task_number(self.xlsx_file)
         if not available_tasks:
@@ -193,15 +225,24 @@ class fileConverterApp(QWidget):
             return
 
         self.sort_task_window = SortByTaskNumber(self, available_tasks)
-        self.sort_task_window.sorting_applied.connect(self.apply_task_number_sorting)
+        self.sort_task_window.sorting_applied.connect(self.start_task_number_sorting)
         self.sort_task_window.show()
 
+# Запуск сортировки в отдельном потоке
+    def start_task_number_sorting(self, selected_tasks):
+        self.progress_bar.setValue(0)  # Инициализация прогресс-бара
+        self.sort_thread = SortTaskThread(self.xlsx_file, selected_tasks)
+        self.sort_thread.progress.connect(self.progress_bar.setValue)
+        self.sort_thread.sorting_done.connect(self.apply_task_number_sorting)
+        self.sort_thread.start()
 
-    def apply_task_number_sorting(self, selected_tasks):
-        new_header, data_by_task = filter_rows_by_task(self.xlsx_file, 3, selected_tasks)  # 3 - колонка с номерами задач
-        self.sorted_workbook = create_sorted_workbook(new_header, data_by_task)
-        self.btn_download_sorted.setEnabled(True)  # Делаем кнопку скачивания активной
+# Применение отсортированных данных
+    def apply_task_number_sorting(self, sorted_workbook):
+        self.sorted_workbook = sorted_workbook
+        self.btn_download_sorted.setEnabled(True)
 
+
+    
     def download_sorted_xlsx(self):
         if not self.sorted_workbook:
             return
