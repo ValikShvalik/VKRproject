@@ -24,8 +24,8 @@ class fileConverterApp(QWidget):
         # Левая секция (Загрузка, Обработка, Кнопки скачивания)
         left_layout = QVBoxLayout()
 
-        self.file_label = QLabel("Вставьте BIN file")
-        self.bin_select_file = QPushButton("Вставьте BIN file")
+        self.file_label = QLabel("Вставьте BIN или XLSX file")
+        self.bin_select_file = QPushButton("Вставьте BIN или XLSX file")
         self.bin_select_file.clicked.connect(self.select_bin_file)
         left_layout.addWidget(self.file_label)
         left_layout.addWidget(self.bin_select_file)
@@ -90,7 +90,7 @@ class fileConverterApp(QWidget):
 
     def process_bin_file(self):
         if not self.bin_file:
-            self.file_label.setText("Ошибка: выберите BIN-файл перед обработкой")
+            self.file_label.setText("Ошибка: выберите файл перед обработкой")
             return
 
         self.progress_bar.setValue(25)
