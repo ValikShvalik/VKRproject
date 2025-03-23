@@ -4,7 +4,7 @@ import pandas as pd
 from PyQt5.QtCore import pyqtSignal
 from Sort_by_diag_type import sort_by_diag_type_message
 import sys, os, openpyxl
-from Core_process import SaveFileThread, Core_process, LoadXlsxThread, SortTaskThread, LoadReadyXlsx
+from Core_procces import Core_process, LoadReadyXlsx, LoadXlsxThread, SaveFileThread, SortTaskThread
 from Sort_by_number_task import gain_task_number
 
 class fileConverterApp(QWidget):
