@@ -4,6 +4,9 @@ from Convertation import parse_bin_file
 from Sort_by_number_task import filter_rows_by_task, create_sorted_workbook
 import os, tempfile
 import pandas as pd, time, openpyxl
+import os
+import pandas as pd, time
+
 
 class Core_process(QThread):
     progress_updated = pyqtSignal(int)
