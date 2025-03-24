@@ -3,8 +3,8 @@ from PyQt5.QtWidgets import (QApplication, QLabel, QWidget, QFileDialog, QProgre
 import pandas as pd
 from PyQt5.QtCore import pyqtSignal
 from Sort_by_diag_type import sort_by_diag_type_message
-import sys, os, openpyxl
-from Core_procces import Core_process, LoadReadyXlsx, LoadXlsxThread, SaveFileThread, SortTaskThread
+import sys, os, openpyxl, time
+from Core_procces import SaveFileThread, Core_process, LoadXlsxThread, SortTaskThread, LoadReadyXlsx, TaskSearchThread
 from Sort_by_number_task import gain_task_number
 
 class fileConverterApp(QWidget):
@@ -16,6 +16,7 @@ class fileConverterApp(QWidget):
         self.core_process = None
         self.load_thread = None  
         self.save_thread = None
+        self.save_sorted_thread = None
 
     def initUI(self):
         main_layout = QVBoxLayout()
@@ -88,6 +89,9 @@ class fileConverterApp(QWidget):
         self.setGeometry(100, 100, 800, 600)
         self.setWindowTitle("Converter")
 
+    def update_progress(self, progress):
+        self.progress_bar.setValue(progress)
+
     def process_bin_file(self):
         if not self.bin_file:
             self.file_label.setText("Ошибка: выберите файл перед обработкой")
@@ -121,6 +125,8 @@ class fileConverterApp(QWidget):
             self.btn_process.setEnabled(True)  # Включаем кнопку "Обработать" после выбора BIN файла
         elif file_path.endswith(".xlsx"):
             self.file_label.setText(f"Выбран файл: {file_path}")
+            self.progress_bar.setValue(25)
+            time.sleep(5)
             self.ready_data = LoadReadyXlsx(file_path)
             self.ready_data.progress_update.connect(self.update_progress)
             self.ready_data.file_loaded.connect(self.load_xlsx_preview)
@@ -150,17 +156,6 @@ class fileConverterApp(QWidget):
         for row in range(len(df)):
             for col in range(len(df.columns)):
                 self.table.setItem(row, col, QTableWidgetItem(str(df.iloc[row, col])))
-
-    
-    def update_progress(self, progress):
-        self.progress_bar.setValue(progress)
-
-    def uptade_table_progress(self, progress):
-        self.progress_bar.setValue(progress)
-
-    def update_progress_bar(self, value):
-        self.progress_bar.setValue(value)
-
 
 
     def download_xlsx(self):
@@ -212,23 +207,16 @@ class fileConverterApp(QWidget):
 
     def open_sort_task_window(self):
         if not self.xlsx_file:
-            self.message_error = QMessageBox.warning(self, "Ошибка", "Не найден xlsx файл")
+            QMessageBox.warning(self, "Ошибка", "Не найден xlsx файл")
             return
-        
 
         if hasattr(self, 'sort_task_window') and self.sort_task_window.isVisible():
-            return  # Если окно сортировки уже открыто, не открывать новое
-
-        available_tasks = gain_task_number(self.xlsx_file)
-        if not available_tasks:
-            self.file_label.setText("Ошибка: не найдены номера задач")
             return
 
-        self.sort_task_window = SortByTaskNumber(self, available_tasks)
+        self.sort_task_window = SortByTaskNumber(self, self.xlsx_file)
         self.sort_task_window.sorting_applied.connect(self.start_task_number_sorting)
         self.sort_task_window.show()
 
-# Запуск сортировки в отдельном потоке
     def start_task_number_sorting(self, selected_tasks):
         self.progress_bar.setValue(0)  # Инициализация прогресс-бара
         self.sort_thread = SortTaskThread(self.xlsx_file, selected_tasks)
@@ -236,22 +224,27 @@ class fileConverterApp(QWidget):
         self.sort_thread.sorting_done.connect(self.apply_task_number_sorting)
         self.sort_thread.start()
 
-# Применение отсортированных данных
+
     def apply_task_number_sorting(self, sorted_workbook):
         self.sorted_workbook = sorted_workbook
         self.btn_download_sorted.setEnabled(True)
 
 
-    
     def download_sorted_xlsx(self):
         if not self.sorted_workbook:
             return
 
         save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить отсортированный файл", "Sorted.xlsx", "XLSX Files (*.xlsx)")
         if save_path:
-            self.sorted_workbook.save(save_path)
-            self.btn_download_sorted.setEnabled(False)  # Отключаем кнопку после скачивания
+            self.save_thread = SaveFileThread(self.sorted_workbook, save_path)
+            self.save_thread.progress.connect(self.update_progress)
+            self.save_thread.start()
 
+            self.btn_download_sorted.setEnabled(False)  
+            self.progress_bar.setValue(0)  
+            self.progress_bar.setVisible(True) 
+
+            
 
 class SortByDiagMessageType(QDialog):
     sorting_aplied = pyqtSignal(list)
@@ -321,14 +314,27 @@ class SortByDiagMessageType(QDialog):
 class SortByTaskNumber(QDialog):
     sorting_applied = pyqtSignal(list)
 
-    def __init__(self, parent=None, task_numbers=None):
+    def __init__(self, parent=None, xlsx_file=None):
         super().__init__(parent)
+        self.xlsx_file = xlsx_file
         self.setWindowTitle("Сортировка по номеру задач")
-        self.setGeometry(200, 200, 500, 300)
+        self.setGeometry(200, 200, 500, 350)
 
         main_layout = QVBoxLayout()
         lists_layout = QHBoxLayout()
 
+        # Прогресс-бар
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+        main_layout.addWidget(self.progress_bar)
+
+        # Кнопка поиска номеров задач
+        self.btn_search = QPushButton("Поиск номеров задач")
+        self.btn_search.clicked.connect(self.start_task_search)
+        main_layout.addWidget(self.btn_search)
+
+        # Левая колонка
         left_layout = QVBoxLayout()
         self.label_all = QLabel("Номера задач")
         left_layout.addWidget(self.label_all)
@@ -338,6 +344,7 @@ class SortByTaskNumber(QDialog):
 
         lists_layout.addLayout(left_layout)
 
+        # Правая колонка
         right_layout = QVBoxLayout()
         self.label_select = QLabel("Выберите номер/номера задач")
         right_layout.addWidget(self.label_select)
@@ -349,6 +356,7 @@ class SortByTaskNumber(QDialog):
         lists_layout.addLayout(right_layout)
         main_layout.addLayout(lists_layout)
 
+        # Кнопка сортировки
         self.btn_sort = QPushButton("Выполнить сортировку")
         self.btn_sort.setEnabled(False)
         self.btn_sort.clicked.connect(self.apply_sorting)
@@ -356,12 +364,36 @@ class SortByTaskNumber(QDialog):
 
         self.setLayout(main_layout)
 
-        if task_numbers:
-            for task in task_numbers:
-                self.list_all_tasks.addItem(QListWidgetItem(str(task)))
-                self.list_select_tasks.addItem(QListWidgetItem(str(task)))
-
         self.list_select_tasks.itemSelectionChanged.connect(self.check_selection)
+
+    # 🔹 Запуск потока для поиска номеров задач
+    def start_task_search(self):
+        self.btn_search.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+
+        self.task_search_thread = TaskSearchThread(self.xlsx_file)
+        self.task_search_thread.progress.connect(self.progress_bar.setValue)
+        self.task_search_thread.finished.connect(self.populate_tasks)
+        self.task_search_thread.start()
+
+    # 🔹 Заполнение списка найденных задач
+    def populate_tasks(self, task_numbers):
+        self.list_all_tasks.clear()
+        self.list_select_tasks.clear()
+
+        if not task_numbers:
+            QMessageBox.warning(self, "Ошибка", "Не найдены номера задач")
+            self.btn_search.setEnabled(True)
+            self.progress_bar.setVisible(False)
+            return
+
+        for task in task_numbers:
+            self.list_all_tasks.addItem(QListWidgetItem(str(task)))
+            self.list_select_tasks.addItem(QListWidgetItem(str(task)))
+
+        self.btn_search.setEnabled(True)
+        self.progress_bar.setVisible(False)
 
     def check_selection(self):
         selected_items = self.list_select_tasks.selectedItems()

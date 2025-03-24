@@ -1,7 +1,8 @@
 import threading
 from PyQt5.QtCore import pyqtSignal, QThread
 from Convertation import parse_bin_file
-from Sort_by_number_task import filter_rows_by_task, create_sorted_workbook
+from Sort_by_number_task import filter_rows_by_task, create_sorted_workbook, gain_task_number
+from Sort_by_diag_type import sort_by_diag_type_message
 import os, tempfile
 import pandas as pd, time, openpyxl
 import os
@@ -89,6 +90,26 @@ class SaveFileThread(QThread):
             self.file_saved.emit(f"Error: {str(e)}")  
 
 
+class TaskSearchThread(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(list)
+
+    def __init__(self, xlsx_file):
+        super().__init__()
+        self.xlsx_file = xlsx_file
+
+    def run(self):
+        self.progress.emit(10)  # Начальный прогресс
+
+        try:
+            task_numbers = gain_task_number(self.xlsx_file)  # Запуск функции поиска номеров задач
+        except Exception as e:
+            task_numbers = []
+            print(f"Ошибка при поиске номеров задач: {e}")
+
+        self.progress.emit(100)  # Завершение
+        self.finished.emit(task_numbers)
+
 class SortTaskThread(QThread):
     progress = pyqtSignal(int)  # Сигнал для обновления прогресса
     sorting_done = pyqtSignal(object)  # Сигнал для передачи отсортированного workbook
@@ -148,3 +169,31 @@ class LoadReadyXlsx(QThread):
         self.file_loaded.emit(workbook)  # Отправляем объект workbook
         self.Ppath.emit(path)
         
+
+class SortMessageThread(QThread):
+    sorting_finished = pyqtSignal(object)  # Универсальный сигнал (список или workbook)
+
+    def __init__(self, xlsx_file, selected_types):
+        super().__init__()
+        self.xlsx_file = xlsx_file
+        self.selected_types = selected_types
+
+    def run(self):
+        if self.selected_types is None:
+            # Извлекаем уникальные типы сообщений
+            df = pd.read_excel(self.xlsx_file, sheet_name=None)  
+            all_unique_types = []
+
+            for sheet_name, sheet_data in df.items():
+                if isinstance(sheet_data, pd.Series):
+                    sheet_data = sheet_data.to_frame()
+                if "Тип диагностического сообщения" in sheet_data.columns:
+                    unique_types = sheet_data["Тип диагностического сообщения"].dropna().unique().tolist()
+                    all_unique_types.extend(unique_types)
+
+            all_unique_types = list(set(all_unique_types))
+            self.sorting_finished.emit(all_unique_types)
+        else:
+            # Выполняем сортировку
+            sorted_workbook = sort_by_diag_type_message(self.xlsx_file, self.selected_types)
+            self.sorting_finished.emit(sorted_workbook)
