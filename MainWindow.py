@@ -2,10 +2,9 @@ from PyQt5.QtWidgets import (QApplication, QLabel, QWidget, QFileDialog, QProgre
                              QHBoxLayout, QVBoxLayout, QPushButton, QListWidget, QListWidgetItem, QDialog, QGroupBox, QMessageBox)
 import pandas as pd
 from PyQt5.QtCore import pyqtSignal
-from Sort_by_diag_type import sort_by_diag_type_message
 import sys, os, openpyxl, time
-from Core_procces import SaveFileThread, Core_process, LoadXlsxThread, SortTaskThread, LoadReadyXlsx, TaskSearchThread
-from Sort_by_number_task import gain_task_number
+from Core_procces import SaveFileThread, Core_process, LoadXlsxThread, SortTaskThread, LoadReadyXlsx, TaskSearchThread, SortMessageSortingThread, SortMessageSearchThread
+
 
 class fileConverterApp(QWidget):
     def __init__(self):
@@ -173,37 +172,30 @@ class fileConverterApp(QWidget):
             self.progress_bar.setVisible(True) 
 
         
-    def apply_message_type_sorting(self, selected_types):
-        self.sorted_workbook = sort_by_diag_type_message(self.xlsx_file, selected_types)
-
-        if self.sorted_workbook:
-            self.btn_download_sorted.setEnabled(True)  # Включаем кнопку для скачивания отсортированного файла
-
     def open_sort_message_window(self):
         if not self.xlsx_file:
             self.message_error = QMessageBox.warning(self, "Ошибка", "Не найден xlsx файл")
             return
 
-        df = pd.read_excel(self.xlsx_file, sheet_name=None)  
-        all_unique_types = []
-        for sheet_name, sheet_data in df.items():
+        # Проверяем, не открыто ли уже окно сортировки
+        if hasattr(self, 'sort_window') and self.sort_window.isVisible():
+            return  
 
-            if isinstance(sheet_data, pd.Series):
-                sheet_data = sheet_data.to_frame()
-
-            if "Тип диагностического сообщения" in sheet_data.columns:
-                unique_types = sheet_data["Тип диагностического сообщения"].dropna().unique().tolist()
-                print(f"Уникальные типы на листе {sheet_name}: {unique_types}")
-                all_unique_types.extend(unique_types) 
-           
-
- 
-        all_unique_types = list(set(all_unique_types))
-
-      
-        self.sort_window = SortByDiagMessageType(self, all_unique_types)
-        self.sort_window.sorting_aplied.connect(self.apply_message_type_sorting)
+        # Создаем окно сортировки
+        self.sort_window = SortByDiagMessageType(self, self.xlsx_file)
+        self.sort_window.sorting_aplied.connect(self.start_diag_type_sorting)
         self.sort_window.show()
+
+    def start_diag_type_sorting(self, selected_types):
+        self.progress_bar.setValue(1)
+        self.sort_thread = SortMessageSortingThread(self.xlsx_file, selected_types)
+        self.sort_thread.progress.connect(self.progress_bar.setValue)
+        self.sort_thread.sorting_done.connect(self.apply_diag_type_sorting)
+        self.sort_thread.start()
+
+    def apply_diag_type_sorting(self, sorted_workbok):
+        self.sorted_workbook  = sorted_workbok
+        self.btn_download_sorted.setEnabled(True)
 
     def open_sort_task_window(self):
         if not self.xlsx_file:
@@ -245,14 +237,18 @@ class fileConverterApp(QWidget):
             self.progress_bar.setVisible(True) 
 
             
-
 class SortByDiagMessageType(QDialog):
-    sorting_aplied = pyqtSignal(list)
+    sorting_aplied = pyqtSignal(list)  # Сигнал для применения сортировки
 
-    def __init__(self, parent=None, message_types=None):
+    def __init__(self, parent=None, xlsx_file=None):
         super().__init__(parent)
         self.setWindowTitle("Сортировка по типу сообщений")
-        self.setGeometry(200, 200, 500, 300)
+        self.setGeometry(200, 200, 500, 380)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(False)
+
+        self.xlsx_file = xlsx_file  # Сохраняем путь к файлу Excel
 
         main_layout = QVBoxLayout()
         lists_layout = QHBoxLayout()
@@ -278,31 +274,58 @@ class SortByDiagMessageType(QDialog):
         lists_layout.addLayout(right_layout)
         main_layout.addLayout(lists_layout)
 
+        # Прогресс-бар для поиска
+        self.progress_bar = QProgressBar(self)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setVisible(False)  # Скрыт по умолчанию
+        main_layout.addWidget(self.progress_bar)
+
+        # Кнопка поиска типов сообщений
+        self.btn_search = QPushButton("Поиск типов сообщений")
+        self.btn_search.clicked.connect(self.start_message_type_search)
+        main_layout.addWidget(self.btn_search)
+
+        # Кнопка выполнения сортировки
         self.btn_sort = QPushButton("Выполнить сортировку")
-        self.btn_sort.setEnabled(False)  # Изначально кнопка неактивна
+        self.btn_sort.setEnabled(False)
         self.btn_sort.clicked.connect(self.apply_sorting)
         main_layout.addWidget(self.btn_sort)
+        main_layout.addWidget(self.progress_bar)
 
         self.setLayout(main_layout)
 
-        if message_types:
-            for msg_type in message_types:
-                if msg_type == 255:
-                    continue
-
-                self.list_all_types.addItem(QListWidgetItem(str(msg_type)))
-                self.list_select_types.addItem(QListWidgetItem(str(msg_type)))
-
-        # Подключаем сигнал изменения выделенных элементов
         self.list_select_types.itemSelectionChanged.connect(self.check_selection)
 
     def check_selection(self):
-        # Проверяем, есть ли хотя бы один выбранный элемент в списке
         selected_items = self.list_select_types.selectedItems()
         if selected_items:
-            self.btn_sort.setEnabled(True)  # Активируем кнопку
+            self.btn_sort.setEnabled(True)
         else:
-            self.btn_sort.setEnabled(False)  # Деактивируем кнопку, если ничего не выбрано
+            self.btn_sort.setEnabled(False)
+
+    def start_message_type_search(self):
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.sort_thread = SortMessageSearchThread(self.xlsx_file)
+        self.sort_thread.progress.connect(self.progress_bar.setValue)
+        self.sort_thread.search_done.connect(self.on_search_finished)
+        self.sort_thread.start()
+
+    def update_progress(self, value):
+        self.progress_bar.setValue(value)
+
+    def on_search_finished(self, unique_types):
+        self.list_all_types.clear()
+
+        if unique_types:
+            for msg_type in sorted(unique_types):
+                if msg_type == 255:
+                    continue
+                self.list_all_types.addItem(QListWidgetItem(str(msg_type)))
+                self.list_select_types.addItem(QListWidgetItem(str(msg_type)))
+
+        self.btn_search.setEnabled(True)
+        self.progress_bar.setVisible(False) 
 
     def apply_sorting(self):
         selected_types = [int(item.text()) for item in self.list_select_types.selectedItems()]
@@ -366,7 +389,6 @@ class SortByTaskNumber(QDialog):
 
         self.list_select_tasks.itemSelectionChanged.connect(self.check_selection)
 
-    # 🔹 Запуск потока для поиска номеров задач
     def start_task_search(self):
         self.btn_search.setEnabled(False)
         self.progress_bar.setVisible(True)
@@ -377,7 +399,6 @@ class SortByTaskNumber(QDialog):
         self.task_search_thread.finished.connect(self.populate_tasks)
         self.task_search_thread.start()
 
-    # 🔹 Заполнение списка найденных задач
     def populate_tasks(self, task_numbers):
         self.list_all_tasks.clear()
         self.list_select_tasks.clear()

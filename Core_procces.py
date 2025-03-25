@@ -110,6 +110,53 @@ class TaskSearchThread(QThread):
         self.progress.emit(100)  # Завершение
         self.finished.emit(task_numbers)
 
+class SortMessageSearchThread(QThread):
+    progress = pyqtSignal(int)
+    search_done = pyqtSignal(list)
+
+    def __init__(self, xlsx_file):
+        super().__init__()
+        self.xlsx_file = xlsx_file
+
+    def run(self):
+        self.progress.emit(17)
+        all_unique_types = self.get_unique_diag_type(self.xlsx_file)
+        self.search_done.emit(all_unique_types)
+
+    def get_unique_diag_type(self, xlsx_file):
+        import pandas as pd
+
+        df = pd.read_excel(xlsx_file, sheet_name=None)
+        self.progress.emit(25)
+        all_unique_types = []
+
+        for sheet_name, sheet_data in df.items():
+            if isinstance(sheet_data, pd.DataFrame) and sheet_data.shape[1] > 3:
+                # Получаем уникальные типы из 4-го столбца (индекса 3)
+                unique_types = sheet_data.iloc[:, 3].dropna().unique().tolist()
+                self.progress.emit(65)
+                all_unique_types.extend(unique_types)
+
+        all_unique_types = list(set(all_unique_types))  # Убираем дубликаты
+        self.progress.emit(100)
+        return all_unique_types
+
+class SortMessageSortingThread(QThread):
+    progress = pyqtSignal(int)
+    sorting_done = pyqtSignal(object)
+
+    def __init__(self, xlsx_file, selected_types):
+        super().__init__()
+        self.xlsx_file = xlsx_file
+        self.selected_types = selected_types
+
+    def run(self):
+        self.progress.emit(25)
+        sorted_workbook = sort_by_diag_type_message(self.xlsx_file, self.selected_types)
+        self.progress.emit(54)
+        self.sorting_done.emit(sorted_workbook)
+        self.progress.emit(100)
+
 class SortTaskThread(QThread):
     progress = pyqtSignal(int)  # Сигнал для обновления прогресса
     sorting_done = pyqtSignal(object)  # Сигнал для передачи отсортированного workbook
@@ -170,30 +217,33 @@ class LoadReadyXlsx(QThread):
         self.Ppath.emit(path)
         
 
-class SortMessageThread(QThread):
-    sorting_finished = pyqtSignal(object)  # Универсальный сигнал (список или workbook)
 
-    def __init__(self, xlsx_file, selected_types):
+class MessageTypeWorker(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(list)
+
+    def __init__(self, xlsx_file):
         super().__init__()
         self.xlsx_file = xlsx_file
-        self.selected_types = selected_types
 
     def run(self):
-        if self.selected_types is None:
-            # Извлекаем уникальные типы сообщений
-            df = pd.read_excel(self.xlsx_file, sheet_name=None)  
-            all_unique_types = []
+        import pandas as pd
 
-            for sheet_name, sheet_data in df.items():
-                if isinstance(sheet_data, pd.Series):
-                    sheet_data = sheet_data.to_frame()
-                if "Тип диагностического сообщения" in sheet_data.columns:
-                    unique_types = sheet_data["Тип диагностического сообщения"].dropna().unique().tolist()
-                    all_unique_types.extend(unique_types)
+        df = pd.read_excel(self.xlsx_file, sheet_name=None)
+        all_unique_types = set()
+        total_sheets = len(df)
+        processed_sheets = 0
 
-            all_unique_types = list(set(all_unique_types))
-            self.sorting_finished.emit(all_unique_types)
-        else:
-            # Выполняем сортировку
-            sorted_workbook = sort_by_diag_type_message(self.xlsx_file, self.selected_types)
-            self.sorting_finished.emit(sorted_workbook)
+        for sheet_name, sheet_data in df.items():
+            if isinstance(sheet_data, pd.Series):
+                sheet_data = sheet_data.to_frame()
+
+            if "Тип диагностического сообщения" in sheet_data.columns:
+                unique_types = sheet_data["Тип диагностического сообщения"].dropna().unique().tolist()
+                all_unique_types.update(unique_types)
+
+            processed_sheets += 1
+            progress_percent = int((processed_sheets / total_sheets) * 100)
+            self.progress.emit(progress_percent)
+
+        self.finished.emit(sorted(all_unique_types))
