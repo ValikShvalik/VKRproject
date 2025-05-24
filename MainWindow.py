@@ -7,7 +7,7 @@ import sys, os, openpyxl
 from Core_process import SaveFileThread, Core_process, LoadXlsxThread, SortTaskThread, LoadReadyXlsx
 from Sort_by_number_task import gain_task_number
 from database.init_db import create_tables
-from analytic.menu_bar import AppMenuBar, ExportDialog
+from analytic.menu_bar import AppMenuBar, ExportDialog, DeleteDialog, SolveDialog
 
 
 class fileConverterApp(QMainWindow):
@@ -25,7 +25,9 @@ class fileConverterApp(QMainWindow):
         # Добавляем меню
         self.menu_bar = AppMenuBar(self)
         self.setMenuBar(self.menu_bar)
-        self.menu_bar.request_show_files.connect(self.open_export_dialog)
+        self.menu_bar.request_show_files.connect(lambda: self.open_export_dialog(mode="export"))
+        self.menu_bar.request_delete_file.connect(lambda: self.open_export_dialog(mode="delete"))
+        self.menu_bar.request_compare_excel.connect(lambda: self.open_export_dialog(mode="solve"))
 
     def initUI(self):
         central_widget = QWidget()
@@ -101,10 +103,18 @@ class fileConverterApp(QMainWindow):
         self.setGeometry(100, 100, 800, 600)
         self.setWindowTitle("Converter")
 
-    def open_export_dialog(self):
-        dialog = ExportDialog(self)
+    def open_export_dialog(self, mode="export"):
+        if (mode == "export"):
+            dialog = ExportDialog(self)
+        elif (mode == "delete"):
+            dialog = DeleteDialog(self)
+        elif (mode == "solve"):
+            dialog = SolveDialog(self)
+        else: 
+            QMessageBox.warning(self, "Неизвестный режим")
+            return
         dialog.exec_()
-
+    
     def process_bin_file(self):
         if not self.bin_file:
             self.file_label.setText("Ошибка: выберите файл перед обработкой")
