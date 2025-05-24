@@ -1,4 +1,4 @@
-import openpyxl, pandas as pd
+import openpyxl
 from openpyxl.utils import get_column_letter
 from Global import sort_by_diag_type_widths, type_names
 
@@ -63,4 +63,3 @@ def sort_by_diag_type_message(xlsx_file, selected_types):
             record_count += 1
 
     return wb_out 
-
