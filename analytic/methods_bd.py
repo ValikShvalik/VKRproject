@@ -1,6 +1,6 @@
 from PyQt5.QtCore import QThread, pyqtSignal
 import os, shutil, sqlite3, openpyxl
-from Global import manual_widths
+from Global import manual_widths, type_names
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 
@@ -38,6 +38,11 @@ def delete_selected_files(file_ids: list[int]):
         cursor.execute("DELETE FROM xlsx_files WHERE id = ?", (file_id,))
     conn.commit()
     conn.close()
+
+def get_files_list(db_conn):
+    cursor = db_conn.cursor()
+    cursor.execute("SELECT id, file_name FROM xlsx_files ORDER BY id")
+    return cursor.fetchall()
 
 
 def decode_koi8r_if_needed(value):
@@ -179,3 +184,105 @@ def compare_messages(excel_msgs, db_msgs):
     stats["diff_rows"] = len(diffs)
     stats["matched_rows"] = stats["total_rows"] - stats["diff_rows"]
     return diffs, stats
+
+
+class CompareWorker(QThread):
+    finished = pyqtSignal(list, dict)  # diffs, stats
+    error = pyqtSignal(str)
+
+    def __init__(self, excel_path, db_file_id):
+        super().__init__()
+        self.excel_path = excel_path
+        self.db_file_id = db_file_id
+
+    def run(self):
+        try:
+            db_conn = sqlite3.connect(DB_PATH)  # создаём здесь соединение
+
+            excel_msgs = load_excel_messages(self.excel_path)
+            db_msgs = load_db_messages(self.db_file_id, db_conn)
+            diffs, stats = compare_messages(excel_msgs, db_msgs)
+
+            db_conn.close()
+
+            self.finished.emit(diffs, stats)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+REVERSE_FIELD_MAPPING = {v: k for k, v in FIELD_MAPPING.items()}
+
+class FilterSearchWorker(QThread):
+    finished = pyqtSignal(list)  # Возвращает список сообщений с русскими ключами
+    error = pyqtSignal(str)
+
+    def __init__(self, db_path, file_id, filters, search_text):
+        super().__init__()
+        self.db_path = db_path
+        self.file_id = file_id
+        self.filters = filters  # dict с фильтрами
+        self.search_text = search_text.lower() if search_text else None
+
+    def run(self):
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            sql = "SELECT * FROM messages WHERE xlsx_file_id = ?"
+            params = [self.file_id]
+
+            conditions = []
+            if 'message_type' in self.filters and self.filters['message_type']:
+                conditions.append("message_type = ?")
+                params.append(self.filters['message_type'])
+            if 'task_number_range' in self.filters:
+                start, end = self.filters['task_number_range']
+                conditions.append("task_number BETWEEN ? AND ?")
+                params.extend([start, end])
+            if 'status' in self.filters and self.filters['status']:
+                conditions.append("status = ?")
+                params.append(self.filters['status'])
+            if 'time_range' in self.filters:
+                start_time, end_time = self.filters['time_range']
+                conditions.append("time >= ? AND time <= ?")
+                params.extend([start_time, end_time])
+
+            if conditions:
+                sql += " AND " + " AND ".join(conditions)
+
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+
+            # Преобразуем результаты в словари с русскими ключами
+            results = []
+            for i, row in enumerate(rows, 1):
+                msg = {}
+                msg["Порядковый номер"] = i  # Добавляем порядковый номер
+
+                # Порядок столбцов в БД:
+                # 0: id, 1: time, 2: task_number, 3: message_type, 4: data_length, 5: data_blob, 6: developer_note
+                # Обрабатываем все поля, кроме id (индекс 0)
+                technical_keys = ["time", "task_number", "message_type", "data_length", "data_blob", "developer_note"]
+                for idx, key in enumerate(technical_keys, start=1):
+                    val = row[idx]
+                    # Декодируем текстовые поля (если нужно)
+                    if key in ("data_blob", "developer_note", "time"):
+                        val = decode_koi8r_if_needed(val)
+                    if key == "message_type":
+                        val = type_names.get(val, str(val))
+                    display_key = REVERSE_FIELD_MAPPING.get(key, key)
+                    msg[display_key] = val
+
+                results.append(msg)
+
+            # Поиск по тексту (если есть)
+            if self.search_text:
+                filtered = []
+                for msg in results:
+                    if any(self.search_text in str(v).lower() for v in msg.values() if isinstance(v, str)):
+                        filtered.append(msg)
+                results = filtered
+
+            self.finished.emit(results)
+
+        except Exception as e:
+            self.error.emit(str(e))

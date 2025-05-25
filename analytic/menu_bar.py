@@ -1,11 +1,11 @@
 from PyQt5.QtWidgets import (QMenuBar, QDialog, QAction, QMessageBox, QFileDialog, QPushButton, QListWidget, QLabel,
-        QVBoxLayout, QHBoxLayout, QComboBox, QTextEdit)
+        QVBoxLayout, QHBoxLayout, QComboBox, QTextEdit, QProgressDialog, QSpinBox, QLineEdit)
 from database.db_manager import DB_PATH
 from analytic.methods_bd import (get_all_files_from_db, get_db_size_mb, ExportEntireDatabaseThread, ExportSelectedFilesThread, delete_selected_files,
-                                 load_db_messages, load_excel_messages, compare_messages, FIELD_MAPPING)
-from PyQt5.QtCore import pyqtSignal
+                                FIELD_MAPPING, CompareWorker, FilterSearchWorker, get_files_list)
+from PyQt5.QtCore import pyqtSignal, Qt
 import sqlite3
-
+from Global import type_names
 
 
 class AppMenuBar(QMenuBar):
@@ -183,7 +183,6 @@ class DeleteDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Ошибка при удалении: {e}")
 
 
-
 class SolveDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -193,6 +192,7 @@ class SolveDialog(QDialog):
 
         self.excel_path = None
         self.db_file_id = None
+        self.worker = None
 
         self.init_ui()
         self.load_files_from_db()
@@ -249,10 +249,21 @@ class SolveDialog(QDialog):
             QMessageBox.warning(self, "Ошибка", "Выберите файл из базы")
             return
 
-        excel_msgs = load_excel_messages(self.excel_path)
-        db_msgs = load_db_messages(self.db_file_id, self.db_conn)
-        diffs, stats = compare_messages(excel_msgs, db_msgs)
+        # Показываем прогресс-диалог
+        self.progress = QProgressDialog("Сравнение файлов...", None, 0, 0, self)
+        self.progress.setWindowTitle("Пожалуйста, подождите")
+        self.progress.setCancelButton(None)
+        self.progress.setWindowModality(Qt.WindowModal)
+        self.progress.show()
 
+        # Запускаем поток с обработкой
+        self.worker = CompareWorker(self.excel_path, self.db_file_id)
+        self.worker.finished.connect(self.on_compare_finished)
+        self.worker.error.connect(self.on_compare_error)
+        self.worker.start()
+
+    def on_compare_finished(self, diffs, stats):
+        self.progress.close()
         report = []
         report.append(f"Всего строк для сравнения: {stats['total_rows']}")
         report.append(f"Совпадающих строк: {stats['matched_rows']}")
@@ -275,3 +286,130 @@ class SolveDialog(QDialog):
             report.append("Различий не обнаружено.")
 
         self.text_result.setPlainText("\n".join(report))
+
+    def on_compare_error(self, message):
+        self.progress.close()
+        QMessageBox.critical(self, "Ошибка при сравнении", message)
+
+
+class FilterSearcherDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.db_conn = sqlite3.connect(DB_PATH)
+        self.setWindowTitle("Фильтр и поиск по базе")
+
+        self.file_id = None
+        self.worker = None
+
+        self.init_ui()
+        self.load_files()
+
+    def init_ui(self):
+        layout = QVBoxLayout()
+
+        # Выбор файла из базы
+        self.combo_files = QComboBox()
+        self.combo_files.currentIndexChanged.connect(self.file_changed)
+        layout.addWidget(QLabel("Выберите файл из базы:"))
+        layout.addWidget(self.combo_files)
+
+        # Фильтры по типу сообщения
+        hbox_type = QHBoxLayout()
+        hbox_type.addWidget(QLabel("Тип сообщения:"))
+        self.combo_type = QComboBox()
+        self.combo_type.addItem("Все", None)
+        for key in sorted(type_names, reverse=True):
+            self.combo_type.addItem(type_names[key], key)
+        hbox_type.addWidget(self.combo_type)
+        layout.addLayout(hbox_type)
+
+        # Фильтр по номеру задачи (диапазон)
+        hbox_task = QHBoxLayout()
+        hbox_task.addWidget(QLabel("Номер задачи от:"))
+        self.spin_task_start = QSpinBox()
+        self.spin_task_start.setMinimum(0)
+        self.spin_task_start.setMaximum(1000000)
+        hbox_task.addWidget(self.spin_task_start)
+        hbox_task.addWidget(QLabel("до:"))
+        self.spin_task_end = QSpinBox()
+        self.spin_task_end.setMinimum(0)
+        self.spin_task_end.setMaximum(1000000)
+        hbox_task.addWidget(self.spin_task_end)
+        layout.addLayout(hbox_task)
+
+        # Поиск по тексту
+        layout.addWidget(QLabel("Поиск по тексту:"))
+        self.edit_search = QLineEdit()
+        layout.addWidget(self.edit_search)
+
+        # Кнопка применить фильтр
+        self.btn_apply = QPushButton("Применить фильтр")
+        self.btn_apply.clicked.connect(self.apply_filter)
+        layout.addWidget(self.btn_apply)
+
+        # Результат
+        self.text_result = QTextEdit()
+        self.text_result.setReadOnly(True)
+        layout.addWidget(self.text_result)
+
+        self.setLayout(layout)
+
+    def load_files(self):
+        files = get_files_list(self.db_conn)
+        self.combo_files.clear()
+        for fid, fname in files:
+            self.combo_files.addItem(fname, fid)
+        if files:
+            self.file_id = files[0][0]
+
+    def file_changed(self, index):
+        if index >= 0:
+            self.file_id = self.combo_files.itemData(index)
+
+    def apply_filter(self):
+        if self.file_id is None:
+            QMessageBox.warning(self, "Ошибка", "Выберите файл из базы")
+            return
+
+        filters = {}
+
+        message_type = self.combo_type.currentData()
+        filters["message_type"] = message_type 
+
+        start_task = self.spin_task_start.value()
+        end_task = self.spin_task_end.value()
+        if start_task <= end_task:
+            filters["task_number_range"] = (start_task, end_task)
+        else:
+            QMessageBox.warning(self, "Ошибка", "Начало диапазона номера задачи не может быть больше конца")
+            return
+
+        search_text = self.edit_search.text().strip()
+
+        # Блокируем кнопку и очищаем результат
+        self.btn_apply.setEnabled(False)
+        self.text_result.clear()
+        self.text_result.append("Загрузка данных...")
+
+        # Запускаем поток
+        self.worker = FilterSearchWorker(DB_PATH, self.file_id, filters, search_text)
+        self.worker.finished.connect(self.on_filter_finished)
+        self.worker.error.connect(self.on_filter_error)
+        self.worker.start()
+
+    def on_filter_finished(self, results):
+        self.btn_apply.setEnabled(True)
+        if not results:
+            self.text_result.setPlainText("Данные не найдены.")
+            return
+
+        # Отобразим результаты в текстовом виде (можно заменить на таблицу)
+        report = []
+        for i, msg in enumerate(results, 1):
+            report.append(f"{i}. {msg}")
+        self.text_result.setPlainText("\n".join(report))
+
+    def on_filter_error(self, error_msg):
+        self.btn_apply.setEnabled(True)
+        QMessageBox.critical(self, "Ошибка при загрузке", error_msg)
+        self.text_result.clear()
