@@ -1,12 +1,13 @@
 from PyQt5.QtWidgets import (QMenuBar, QDialog, QAction, QMessageBox, QFileDialog, QPushButton, QListWidget, QLabel,
-        QVBoxLayout, QHBoxLayout, QComboBox, QTextEdit, QProgressDialog, QSpinBox, QLineEdit)
+        QVBoxLayout, QHBoxLayout, QComboBox, QTextEdit, QProgressDialog, QSpinBox, QLineEdit, QTableWidget, QTableWidgetItem)
 from database.db_manager import DB_PATH
 from analytic.methods_bd import (get_all_files_from_db, get_db_size_mb, ExportEntireDatabaseThread, ExportSelectedFilesThread, delete_selected_files,
-                                FIELD_MAPPING, CompareWorker, FilterSearchWorker, get_files_list)
+                                FIELD_MAPPING, CompareWorker, FilterSearchWorker, get_files_list, MetabaseLauncherThread)
 from PyQt5.QtCore import pyqtSignal, Qt
-import sqlite3
+import sqlite3, webbrowser, os
 from Global import type_names
 
+password = "Petya2003"
 
 class AppMenuBar(QMenuBar):
     # Можно добавить сигналы, если нужно будет обновлять интерфейс
@@ -307,13 +308,13 @@ class FilterSearcherDialog(QDialog):
     def init_ui(self):
         layout = QVBoxLayout()
 
-        # Выбор файла из базы
+        # Выбор файла
         self.combo_files = QComboBox()
         self.combo_files.currentIndexChanged.connect(self.file_changed)
         layout.addWidget(QLabel("Выберите файл из базы:"))
         layout.addWidget(self.combo_files)
 
-        # Фильтры по типу сообщения
+        # Фильтр по типу сообщения
         hbox_type = QHBoxLayout()
         hbox_type.addWidget(QLabel("Тип сообщения:"))
         self.combo_type = QComboBox()
@@ -323,18 +324,12 @@ class FilterSearcherDialog(QDialog):
         hbox_type.addWidget(self.combo_type)
         layout.addLayout(hbox_type)
 
-        # Фильтр по номеру задачи (диапазон)
+        # Фильтр по номеру задачи
         hbox_task = QHBoxLayout()
-        hbox_task.addWidget(QLabel("Номер задачи от:"))
-        self.spin_task_start = QSpinBox()
-        self.spin_task_start.setMinimum(0)
-        self.spin_task_start.setMaximum(1000000)
-        hbox_task.addWidget(self.spin_task_start)
-        hbox_task.addWidget(QLabel("до:"))
-        self.spin_task_end = QSpinBox()
-        self.spin_task_end.setMinimum(0)
-        self.spin_task_end.setMaximum(1000000)
-        hbox_task.addWidget(self.spin_task_end)
+        hbox_task.addWidget(QLabel("Номер задачи:"))
+        self.combo_task_number = QComboBox()
+        self.combo_task_number.addItem("Все", None)
+        hbox_task.addWidget(self.combo_task_number)
         layout.addLayout(hbox_task)
 
         # Поиск по тексту
@@ -347,10 +342,14 @@ class FilterSearcherDialog(QDialog):
         self.btn_apply.clicked.connect(self.apply_filter)
         layout.addWidget(self.btn_apply)
 
-        # Результат
-        self.text_result = QTextEdit()
-        self.text_result.setReadOnly(True)
-        layout.addWidget(self.text_result)
+        # Таблица с результатами
+        self.table_result = QTableWidget()
+        self.table_result.setColumnCount(len(FIELD_MAPPING))
+        self.table_result.setHorizontalHeaderLabels(FIELD_MAPPING.keys())
+        self.table_result.horizontalHeader().setStretchLastSection(True)
+        self.table_result.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table_result.setSelectionBehavior(QTableWidget.SelectRows)
+        layout.addWidget(self.table_result)
 
         self.setLayout(layout)
 
@@ -361,10 +360,26 @@ class FilterSearcherDialog(QDialog):
             self.combo_files.addItem(fname, fid)
         if files:
             self.file_id = files[0][0]
+            self.load_task_numbers()
 
     def file_changed(self, index):
         if index >= 0:
             self.file_id = self.combo_files.itemData(index)
+            self.load_task_numbers()
+
+    def load_task_numbers(self):
+        self.combo_task_number.clear()
+        self.combo_task_number.addItem("Все", None)
+        if self.file_id is None:
+            return
+        cursor = self.db_conn.cursor()
+        cursor.execute(
+            "SELECT DISTINCT task_number FROM messages WHERE xlsx_file_id = ? ORDER BY task_number ASC",
+            (self.file_id,)
+        )
+        task_numbers = [row[0] for row in cursor.fetchall()]
+        for number in task_numbers:
+            self.combo_task_number.addItem(str(number), number)
 
     def apply_filter(self):
         if self.file_id is None:
@@ -372,26 +387,18 @@ class FilterSearcherDialog(QDialog):
             return
 
         filters = {}
-
         message_type = self.combo_type.currentData()
-        filters["message_type"] = message_type 
+        filters["message_type"] = message_type
 
-        start_task = self.spin_task_start.value()
-        end_task = self.spin_task_end.value()
-        if start_task <= end_task:
-            filters["task_number_range"] = (start_task, end_task)
-        else:
-            QMessageBox.warning(self, "Ошибка", "Начало диапазона номера задачи не может быть больше конца")
-            return
+        task_number = self.combo_task_number.currentData()
+        if task_number is not None:
+            filters["task_number"] = task_number
 
         search_text = self.edit_search.text().strip()
 
-        # Блокируем кнопку и очищаем результат
         self.btn_apply.setEnabled(False)
-        self.text_result.clear()
-        self.text_result.append("Загрузка данных...")
+        self.table_result.setRowCount(0)
 
-        # Запускаем поток
         self.worker = FilterSearchWorker(DB_PATH, self.file_id, filters, search_text)
         self.worker.finished.connect(self.on_filter_finished)
         self.worker.error.connect(self.on_filter_error)
@@ -399,17 +406,60 @@ class FilterSearcherDialog(QDialog):
 
     def on_filter_finished(self, results):
         self.btn_apply.setEnabled(True)
+        self.table_result.setRowCount(0)
+
         if not results:
-            self.text_result.setPlainText("Данные не найдены.")
+            QMessageBox.information(self, "Результаты", "Данные не найдены.")
             return
 
-        # Отобразим результаты в текстовом виде (можно заменить на таблицу)
-        report = []
-        for i, msg in enumerate(results, 1):
-            report.append(f"{i}. {msg}")
-        self.text_result.setPlainText("\n".join(report))
+        ordered_keys = list(FIELD_MAPPING.keys())
+        self.table_result.setRowCount(len(results))
+
+        for row_index, msg in enumerate(results):
+            for col_index, key in enumerate(ordered_keys):
+                val = msg.get(key, "")
+                item = QTableWidgetItem(str(val))
+                self.table_result.setItem(row_index, col_index, item)
 
     def on_filter_error(self, error_msg):
         self.btn_apply.setEnabled(True)
         QMessageBox.critical(self, "Ошибка при загрузке", error_msg)
-        self.text_result.clear()
+        self.table_result.setRowCount(0)
+
+
+
+class AnalyticsLauncher:
+    def __init__(self, parent=None, jar_path="database/metabase/metabase.jar", url="http://localhost:3000"):
+        self.parent = parent
+        self.jar_path = os.path.abspath(jar_path)
+        self.url = url
+        self.java_path = r"C:\Program Files\Java\jdk-24\bin\java.exe"
+        self.thread = None
+
+    def is_metabase_running(self):
+        import requests
+        try:
+            requests.get(self.url, timeout=2)
+            return True
+        except:
+            return False
+
+    def open_analytics(self):
+        if self.is_metabase_running():
+            webbrowser.open(self.url)
+            return
+
+        self.thread = MetabaseLauncherThread(self.jar_path, self.java_path, self.url)
+        self.thread.started_successfully.connect(self.on_metabase_ready)
+        self.thread.start()
+
+    def on_metabase_ready(self, success):
+        if success:
+            webbrowser.open(self.url)
+        else:
+            QMessageBox.warning(self.parent, "Ошибка", "Не удалось запустить Metabase.")
+
+    def create_action(self):
+        action = QAction("Аналитика", self.parent)
+        action.triggered.connect(self.open_analytics)
+        return action

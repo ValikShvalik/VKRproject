@@ -1,5 +1,5 @@
 from PyQt5.QtCore import QThread, pyqtSignal
-import os, shutil, sqlite3, openpyxl
+import os, shutil, sqlite3, openpyxl, requests, subprocess, time
 from Global import manual_widths, type_names
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
@@ -78,7 +78,6 @@ def decode_key(key):
         return key
 
 
-
 class ExportSelectedFilesThread(QThread):
     finished = pyqtSignal(str)
 
@@ -89,31 +88,58 @@ class ExportSelectedFilesThread(QThread):
     def run(self):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+
         for file_id in self.file_ids:
             cursor.execute("SELECT file_name FROM xlsx_files WHERE id = ?", (file_id,))
             file_name_row = cursor.fetchone()
             if not file_name_row:
                 continue
+
             file_name = file_name_row[0]
-            cursor.execute("SELECT * FROM messages WHERE xlsx_file_id = ?", (file_id,))
+
+            cursor.execute("""
+                SELECT serial_number, time, task_number, message_type, data_length, data_blob, developer_note
+                FROM messages WHERE xlsx_file_id = ?
+                ORDER BY serial_number ASC
+            """, (file_id,))
             messages = cursor.fetchall()
+
             if messages:
                 wb = Workbook()
                 ws = wb.active
                 ws.title = "Messages"
-                header = ["Название файла", "Порядковый номер", "Время", "Номер задачи", "Тип диагностическго сообщения", 
-                          "Длина бинарных данных", "Бинарные данные", "Сообщение разработчику"]
+
+                header = [
+                    "Название файла", "Порядковый номер", "Время", "Номер задачи",
+                    "Тип диагностического сообщения", "Длина бинарных данных",
+                    "Бинарные данные", "Сообщение разработчику"
+                ]
                 ws.append(header)
+
                 for msg in messages:
-                    ws.append(msg[2:9])  # Пропускаем id и file_id
-                for i, width in enumerate(manual_widths, 1):
-                    ws.column_dimensions[get_column_letter(i)].width = width
+                    row = [file_name] + list(msg)
+                    ws.append(row)
+
+
+                ws.column_dimensions['A'].width = 20
+                for col_idx, width in manual_widths.items():
+                    excel_col_idx = col_idx + 1
+                    col_letter = get_column_letter(excel_col_idx)
+                    ws.column_dimensions[col_letter].width = width
+
+
                 if not os.path.exists(EXPORT_DIR):
                     os.makedirs(EXPORT_DIR)
-                export_path = os.path.join(EXPORT_DIR, f"{file_name}_exported.xlsx")
+
+                # Защита имени файла от запрещённых символов
+                safe_file_name = "".join(c for c in file_name if c.isalnum() or c in (' ', '_', '-')).rstrip()
+                export_path = os.path.join(EXPORT_DIR, f"{safe_file_name}_exported.xlsx")
                 wb.save(export_path)
+
         conn.close()
         self.finished.emit("Выбранные файлы экспортированы.")
+
+
 
 class ExportEntireDatabaseThread(QThread):
     finished = pyqtSignal(str)
@@ -213,76 +239,115 @@ class CompareWorker(QThread):
 REVERSE_FIELD_MAPPING = {v: k for k, v in FIELD_MAPPING.items()}
 
 class FilterSearchWorker(QThread):
-    finished = pyqtSignal(list)  # Возвращает список сообщений с русскими ключами
+    finished = pyqtSignal(list)
     error = pyqtSignal(str)
 
     def __init__(self, db_path, file_id, filters, search_text):
         super().__init__()
         self.db_path = db_path
         self.file_id = file_id
-        self.filters = filters  # dict с фильтрами
+        self.filters = filters
         self.search_text = search_text.lower() if search_text else None
 
     def run(self):
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            sql = "SELECT * FROM messages WHERE xlsx_file_id = ?"
+    
+            sql = """
+                SELECT serial_number, time, task_number, message_type, data_length, data_blob, developer_note
+                FROM messages
+                WHERE xlsx_file_id = ?
+            """
             params = [self.file_id]
-
+    
             conditions = []
-            if 'message_type' in self.filters and self.filters['message_type']:
+            if 'message_type' in self.filters and self.filters['message_type'] is not None:
                 conditions.append("message_type = ?")
                 params.append(self.filters['message_type'])
+    
             if 'task_number_range' in self.filters:
                 start, end = self.filters['task_number_range']
                 conditions.append("task_number BETWEEN ? AND ?")
                 params.extend([start, end])
-            if 'status' in self.filters and self.filters['status']:
-                conditions.append("status = ?")
-                params.append(self.filters['status'])
-            if 'time_range' in self.filters:
-                start_time, end_time = self.filters['time_range']
-                conditions.append("time >= ? AND time <= ?")
-                params.extend([start_time, end_time])
-
+    
             if conditions:
                 sql += " AND " + " AND ".join(conditions)
-
+    
+            sql += " ORDER BY serial_number ASC"
+    
             cursor.execute(sql, params)
             rows = cursor.fetchall()
-
-            # Преобразуем результаты в словари с русскими ключами
+    
+            # Поля в порядке FIELD_MAPPING
             results = []
             for i, row in enumerate(rows, 1):
-                msg = {}
-                msg["Порядковый номер"] = i  # Добавляем порядковый номер
-
-                # Порядок столбцов в БД:
-                # 0: id, 1: time, 2: task_number, 3: message_type, 4: data_length, 5: data_blob, 6: developer_note
-                # Обрабатываем все поля, кроме id (индекс 0)
-                technical_keys = ["time", "task_number", "message_type", "data_length", "data_blob", "developer_note"]
-                for idx, key in enumerate(technical_keys, start=1):
-                    val = row[idx]
-                    # Декодируем текстовые поля (если нужно)
-                    if key in ("data_blob", "developer_note", "time"):
-                        val = decode_koi8r_if_needed(val)
-                    if key == "message_type":
-                        val = type_names.get(val, str(val))
-                    display_key = REVERSE_FIELD_MAPPING.get(key, key)
-                    msg[display_key] = val
-
+                serial_number, time_val, task_number, message_type, data_length, data_blob, developer_note = row
+    
+                msg = {
+                    "Порядковый номер": i,
+                    "Время": decode_koi8r_if_needed(time_val),
+                    "Номер задачи": task_number,
+                    "Тип диагностического сообщения": type_names.get(message_type, str(message_type)),
+                    "Длина бинарных данных": data_length,
+                    "Бинарные данные": decode_koi8r_if_needed(data_blob),
+                    "Текстовое сообщение разработчику": decode_koi8r_if_needed(developer_note),
+                }
+    
                 results.append(msg)
-
-            # Поиск по тексту (если есть)
+    
+            # Фильтрация по тексту
             if self.search_text:
                 filtered = []
                 for msg in results:
                     if any(self.search_text in str(v).lower() for v in msg.values() if isinstance(v, str)):
                         filtered.append(msg)
                 results = filtered
-
+    
             self.finished.emit(results)
-
+    
         except Exception as e:
             self.error.emit(str(e))
+    
+    
+
+class MetabaseLauncherThread(QThread):
+    started_successfully = pyqtSignal(bool)
+
+    def __init__(self, jar_path, java_path, url):
+        super().__init__()
+        self.jar_path = jar_path
+        self.java_path = java_path
+        self.url = url
+        self.process = None
+
+    def is_metabase_running(self):
+        try:
+            requests.get(self.url, timeout=2)
+            return True
+        except:
+            return False
+
+    def run(self):
+        if not os.path.exists(self.jar_path):
+            self.started_successfully.emit(False)
+            return
+
+        try:
+            self.process = subprocess.Popen(
+                f'"{self.java_path}" -jar "{self.jar_path}"',
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                shell=True
+            )
+        except Exception:
+            self.started_successfully.emit(False)
+            return
+
+        for _ in range(10):
+            if self.is_metabase_running():
+                self.started_successfully.emit(True)
+                return
+            time.sleep(1)
+
+        self.started_successfully.emit(False)

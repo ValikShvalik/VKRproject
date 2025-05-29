@@ -7,7 +7,7 @@ import sys, os, openpyxl
 from Core_process import SaveFileThread, Core_process, LoadXlsxThread, SortTaskThread, LoadReadyXlsx
 from Sort_by_number_task import gain_task_number
 from database.init_db import create_tables
-from analytic.menu_bar import AppMenuBar, ExportDialog, DeleteDialog, SolveDialog, FilterSearcherDialog
+from analytic.menu_bar import AppMenuBar, ExportDialog, DeleteDialog, SolveDialog, FilterSearcherDialog, AnalyticsLauncher
 
 
 class fileConverterApp(QMainWindow):
@@ -29,6 +29,7 @@ class fileConverterApp(QMainWindow):
         self.menu_bar.request_delete_file.connect(lambda: self.open_export_dialog(mode="delete"))
         self.menu_bar.request_compare_excel.connect(lambda: self.open_export_dialog(mode="solve"))
         self.menu_bar.request_filter_search.connect(lambda: self.open_export_dialog(mode="filter"))
+        self.menu_bar.request_run_analytics.connect(lambda: self.open_export_dialog(mode="analytic"))
 
     def initUI(self):
         central_widget = QWidget()
@@ -113,6 +114,11 @@ class fileConverterApp(QMainWindow):
             dialog = SolveDialog(self)
         elif (mode == "filter"):
             dialog = FilterSearcherDialog(self)
+        elif (mode == "analytic"):
+            if not hasattr(self, "analytics_launcher"):
+                self.analytics_launcher = AnalyticsLauncher(self)
+            self.analytics_launcher.open_analytics()
+            return
         else: 
             QMessageBox.warning(self, "Неизвестный режим")
             return
