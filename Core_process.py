@@ -1,9 +1,10 @@
 import threading
 from PyQt5.QtCore import pyqtSignal, QThread
 from Convertation import parse_bin_file
-from Sort_by_number_task import filter_rows_by_task, create_sorted_workbook
+from Sort_by_number_task import filter_rows_by_task, create_sorted_workbook, gain_task_number
 import pandas as pd, time, openpyxl, os, tempfile
 from database.db_manager import get_unique_file_name, insert_file, insert_messages
+from Sort_by_diag_type import sort_by_diag_type_message
 
 
 
@@ -88,6 +89,73 @@ class SaveFileThread(QThread):
             self.file_saved.emit(f"Error: {str(e)}")  
 
 
+class TaskSearchThread(QThread):
+    progress = pyqtSignal(int)
+    finished = pyqtSignal(list)
+
+    def __init__(self, xlsx_file):
+        super().__init__()
+        self.xlsx_file = xlsx_file
+
+    def run(self):
+        self.progress.emit(10)  # Начальный прогресс
+
+        try:
+            task_numbers = gain_task_number(self.xlsx_file)  # Запуск функции поиска номеров задач
+        except Exception as e:
+            task_numbers = []
+            print(f"Ошибка при поиске номеров задач: {e}")
+
+        self.progress.emit(100)  # Завершение
+        self.finished.emit(task_numbers)
+
+class SortMessageSearchThread(QThread):
+    progress = pyqtSignal(int)
+    search_done = pyqtSignal(list)
+
+    def __init__(self, xlsx_file):
+        super().__init__()
+        self.xlsx_file = xlsx_file
+
+    def run(self):
+        self.progress.emit(17)
+        all_unique_types = self.get_unique_diag_type(self.xlsx_file)
+        self.search_done.emit(all_unique_types)
+
+    def get_unique_diag_type(self, xlsx_file):
+        import pandas as pd
+
+        df = pd.read_excel(xlsx_file, sheet_name=None)
+        self.progress.emit(25)
+        all_unique_types = []
+
+        for sheet_name, sheet_data in df.items():
+            if isinstance(sheet_data, pd.DataFrame) and sheet_data.shape[1] > 3:
+                # Получаем уникальные типы из 4-го столбца (индекса 3)
+                unique_types = sheet_data.iloc[:, 3].dropna().unique().tolist()
+                self.progress.emit(65)
+                all_unique_types.extend(unique_types)
+
+        all_unique_types = list(set(all_unique_types))  # Убираем дубликаты
+        self.progress.emit(100)
+        return all_unique_types
+
+class SortMessageSortingThread(QThread):
+    progress = pyqtSignal(int)
+    sorting_done = pyqtSignal(object)
+
+    def __init__(self, xlsx_file, selected_types):
+        super().__init__()
+        self.xlsx_file = xlsx_file
+        self.selected_types = selected_types
+
+    def run(self):
+        self.progress.emit(25)
+        sorted_workbook = sort_by_diag_type_message(self.xlsx_file, self.selected_types)
+        self.progress.emit(54)
+        self.sorting_done.emit(sorted_workbook)
+        self.progress.emit(100)
+
 class SortTaskThread(QThread):
     progress = pyqtSignal(int)  # Сигнал для обновления прогресса
     sorting_done = pyqtSignal(object)  # Сигнал для передачи отсортированного workbook
@@ -109,6 +177,24 @@ class SortTaskThread(QThread):
         self.progress.emit(80) 
         self.progress.emit(100)
         self.sorting_done.emit(sorted_workbook)
+
+class LoadDoneXlsxFile(QThread):
+    progress = pyqtSignal(int)
+    loading_done = pyqtSignal(object)
+
+    def __init__(self, xlsx_file, file_path):
+        super().__init__()
+        self.xlsx_file = xlsx_file
+        self.file_path = file_path
+
+    def run(self):
+        self.progress.emit(25)
+        workbook = openpyxl.load_workbook(self.file_path)
+        total_steps = 75 
+        time.sleep(0.05)  
+        self.progress.emit(int((25 + 1) * 75 / total_steps)) 
+        self.progress.emit(100)
+        self.loading_done.emit(workbook)
 
 
 class LoadReadyXlsx(QThread):
